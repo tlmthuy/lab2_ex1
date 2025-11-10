@@ -1,0 +1,22 @@
+{
+  "name": "jsx-without-react",
+  "version": "1.0.0",
+  "description": "Lab 2: Setting up custom JSX runtime without React",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "type-check": "tsc --noEmit"
+  },
+  "keywords": [
+    "jsx",
+    "typescript",
+    "vite"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vite": "^7.2.2"
+  }
+}
