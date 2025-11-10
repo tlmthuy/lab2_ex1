@@ -51,37 +51,52 @@ export const createFragment = (
 // ==========================
 // RENDERING SYSTEM
 // ==========================
+// Trong src/jsx-runtime.ts
+
 export function renderToDOM(
-    // Kiểu dữ liệu đầu vào đã được làm sạch (không cần boolean/null/undefined nếu được gọi từ VNode.children)
+    // Kiểu dữ liệu đầu vào đã được làm sạch
     vnode: VNode | string | number
 ): Node {
-    // Text nodes
+    // 1. Text nodes (strings and numbers)
     if (typeof vnode === "string" || typeof vnode === "number") {
         return document.createTextNode(String(vnode));
     }
 
-    // Functional component
+    // 2. Functional component
     if (typeof vnode.type === "function") {
+        // Gọi component function để lấy VNode con
         const props = { ...vnode.props, children: vnode.children };
         return renderToDOM(vnode.type(props));
     }
-
-    // Fragment handling và Regular HTML elements
+    
+    // 3. Fragment handling và Regular HTML elements
     const vnodeObj = vnode as VNode;
     const el: Node = vnodeObj.type === "fragment" 
         ? document.createDocumentFragment() 
         : document.createElement(vnodeObj.type as string);
 
-    // Xử lý Props (Chỉ chạy cho HTML elements, Fragment bỏ qua)
+    // Xử lý Props (Chỉ chạy cho HTML elements)
     if (vnodeObj.type !== "fragment") {
         for (const [key, value] of Object.entries(vnodeObj.props ?? {})) {
             if (key === "children") continue;
 
             const targetEl = el as HTMLElement;
 
-            if (key === "className") {
+            // 💡 Feature: Refs Support (đã hoàn thành)
+            if (key === "ref" && typeof value === "function") {
+                value(targetEl); 
+            } 
+            // Xử lý Events (onClick)
+            else if (key.startsWith("on") && typeof value === "function") {
+                const eventName = key.substring(2).toLowerCase();
+                targetEl.addEventListener(eventName, value);
+            }
+            // Xử lý className
+            else if (key === "className") {
                 targetEl.className = value;
-            } else if (key === "style") {
+            } 
+            // 💡 Feature: CSS-in-JS (đã hoàn thành)
+            else if (key === "style") {
                 if (typeof value === "string") {
                     targetEl.setAttribute("style", value);
                 } else if (typeof value === "object" && value !== null) {
@@ -90,28 +105,41 @@ export function renderToDOM(
                         targetEl.style.setProperty(cssKey, String(v));
                     });
                 }
-            } else if (key.startsWith("on") && typeof value === "function") {
-                targetEl.addEventListener(key.slice(2).toLowerCase(), value);
-            } else if (key === "ref" && typeof value === "function") {
-                value(targetEl);
-            } else if (typeof value === "boolean") {
-                if (value) targetEl.setAttribute(key, "");
-            } else if (value != null) {
+            } 
+            // 💡 Feature: Xử lý Boolean (disabled, checked) - Đã sửa
+            else if (typeof value === "boolean") {
+                if (value) {
+                    targetEl.setAttribute(key, "");
+                } else {
+                    targetEl.removeAttribute(key); // XÓA thuộc tính khi giá trị là false
+                }
+            } 
+            // Xử lý các thuộc tính HTML tiêu chuẩn khác
+            else if (value != null) {
                 targetEl.setAttribute(key, String(value));
             }
         }
     }
 
 
-    // Append children (Children đã được làm sạch trong createElement)
+    // Append children 
     vnodeObj.children.forEach((child) => {
-        // KHÔNG CẦN CÁC ĐIỀU KIỆN LỌC (child != null, etc.) ở đây nữa
         el.appendChild(renderToDOM(child as VNode | string | number));
     });
 
     return el;
 }
+let rootComponent: VNode | ComponentFunction | null = null;
+let rootContainer: HTMLElement | null = null; // KHẮC PHỤC LỖI Cannot find name 'rootContainer'
 
+
+// Hàm kích hoạt re-render toàn bộ ứng dụng
+function scheduleRender() {
+    if (rootComponent && rootContainer) {
+        // Gọi lại mount để vẽ lại toàn bộ cây VNode
+        mount(rootComponent, rootContainer);
+    }
+}
 // ==========================
 // MOUNT TO DOM
 // ==========================
@@ -143,4 +171,76 @@ export function useState<T>(initialValue: T): [() => T, (newValue: T) => void] {
     };
 
     return [getValue, setValue];
+}
+// src/jsx-runtime.ts (Thêm vào đầu file)
+
+// Map lưu trữ các hàm xử lý sự kiện: key = eventType, value = hàm xử lý
+const eventHandlers = new Map(); 
+
+// Hàm lắng nghe sự kiện toàn cục
+function globalEventHandler(e: Event) {
+    // 1. Tìm sự kiện (ví dụ: 'click', 'input')
+    const eventType = e.type;
+    
+    // 2. Lặp lại cho đến root để tìm element có handler
+    let target = e.target as HTMLElement | null;
+    
+    while (target && target !== rootContainer) {
+        // 3. Kiểm tra xem element có thuộc tính lưu trữ handler không (ví dụ: data-onclick)
+        const handler = target.getAttribute(`data-on-${eventType}`);
+        
+        if (handler) {
+            // Nếu tìm thấy handler, gọi hàm tương ứng
+            const handlerFn = eventHandlers.get(handler);
+            if (typeof handlerFn === 'function') {
+                handlerFn(e);
+                return; // Xử lý xong, thoát
+            }
+        }
+        target = target.parentElement;
+    }
+}
+
+// 4. Gắn listener toàn cục (chỉ chạy một lần)
+// Chạy lệnh này khi app mount lần đầu hoặc khi file được tải
+if (typeof document !== 'undefined') {
+    ['click', 'input', 'submit'].forEach(eventType => {
+        document.addEventListener(eventType, globalEventHandler);
+    });
+}
+
+// src/jsx-runtime.ts (Thêm vào cuối file)
+
+// TODO: Create performance tests
+
+export function runBenchmarks(rootContainer: HTMLElement, vnodeToTest: VNode, iterations: number = 1000) {
+    const results = {
+        createElement: 0,
+        renderToDOM: 0
+    };
+
+    // 1. BENCHMARK: createElement Speed
+    const startTimeCreate = performance.now();
+    for (let i = 0; i < iterations; i++) {
+        // Thực hiện lại việc tạo VNode từ một hàm component
+        createElement(vnodeToTest.type as any, vnodeToTest.props, ...vnodeToTest.children); 
+    }
+    const endTimeCreate = performance.now();
+    results.createElement = (endTimeCreate - startTimeCreate) / iterations; // Thời gian trung bình
+
+    // 2. BENCHMARK: renderToDOM Speed
+    const startTimeRender = performance.now();
+    for (let i = 0; i < iterations; i++) {
+        rootContainer.innerHTML = ''; // Reset container
+        rootContainer.appendChild(renderToDOM(vnodeToTest));
+    }
+    const endTimeRender = performance.now();
+    results.renderToDOM = (endTimeRender - startTimeRender) / iterations; // Thời gian trung bình
+
+    console.log(`\n--- JSX Runtime Benchmark (${iterations} runs) ---`);
+    console.log(`Average createElement time: ${results.createElement.toFixed(3)} ms`);
+    console.log(`Average renderToDOM time: ${results.renderToDOM.toFixed(3)} ms`);
+    console.log("-------------------------------------------------");
+    
+    return results;
 }
